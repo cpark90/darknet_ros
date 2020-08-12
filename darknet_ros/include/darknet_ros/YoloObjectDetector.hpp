@@ -49,17 +49,18 @@ extern "C" {
 #include <sys/time.h>
 #include "box.h"
 #include "cost_layer.h"
-#include "darknet_ros/image_interface.h"
 #include "detection_layer.h"
+#include "image.h"
 #include "network.h"
 #include "parser.h"
 #include "region_layer.h"
 #include "utils.h"
 }
+#include "darknet_ros/image_interface.hpp"
 
 extern "C" void ipl_into_image(IplImage* src, image im);
 extern "C" image ipl_to_image(IplImage* src);
-extern "C" void show_image_cv(image p, const char* name, IplImage* disp);
+extern "C" void show_image_cv_o(image p, const char* name, IplImage* disp);
 
 namespace darknet_ros {
 

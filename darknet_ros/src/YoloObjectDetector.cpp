@@ -18,12 +18,88 @@ std::string darknetFilePath_ = DARKNET_FILE_PATH;
 #error Path of darknet repository is not defined in CMakeLists.txt.
 #endif
 
+float get_pixel(image m, int x, int y, int c)
+{
+  assert(x < m.w && y < m.h && c < m.c);
+  return m.data[c*m.h*m.w + y*m.w + x];
+}
+
+image ipl_to_image(IplImage* src)
+{
+    int h = src->height;
+    int w = src->width;
+    int c = src->nChannels;
+    image out = make_image(w, h, c);
+    ipl_into_image(src, out);
+    return out;
+}
+
+void ipl_into_image(IplImage* src, image im)
+{
+    unsigned char *data = (unsigned char *)src->imageData;
+    int h = src->height;
+    int w = src->width;
+    int c = src->nChannels;
+    int step = src->widthStep;
+    int i, j, k;
+
+    for(i = 0; i < h; ++i){
+        for(k= 0; k < c; ++k){
+            for(j = 0; j < w; ++j){
+                im.data[k*w*h + i*w + j] = data[i*step + j*c + k]/255.;
+            }
+        }
+    }
+}
+
+void show_image_cv_o(image p, const char *name, IplImage *disp)
+{
+    int x,y,k;
+    if(p.c == 3) rgbgr_image(p);
+    //normalize_image(copy);
+
+    char buff[256];
+    //sprintf(buff, "%s (%d)", name, windows);
+    sprintf(buff, "%s", name);
+
+    int step = disp->widthStep;
+    cvNamedWindow(buff, CV_WINDOW_NORMAL);
+    //cvMoveWindow(buff, 100*(windows%10) + 200*(windows/10), 100*(windows%10));
+    for(y = 0; y < p.h; ++y){
+        for(x = 0; x < p.w; ++x){
+            for(k= 0; k < p.c; ++k){
+                disp->imageData[y*step + x*p.c + k] = (unsigned char)(get_pixel(p,x,y,k)*255);
+            }
+        }
+    }
+
+    cvShowImage(buff, disp);
+}
+
 namespace darknet_ros {
 
 char* cfg;
 char* weights;
 char* data;
 char** detectionNames;
+
+void axpy_cpu(int N, float ALPHA, float *X, int INCX, float *Y, int INCY)
+{
+  int i;
+  for(i = 0; i < N; ++i) Y[i*INCY] += ALPHA*X[i*INCX];
+}
+
+void scal_cpu(int N, float ALPHA, float *X, int INCX)
+{
+  int i;
+  for(i = 0; i < N; ++i) X[i*INCX] *= ALPHA;
+}
+
+void fill_cpu(int N, float ALPHA, float *X, int INCX)
+{
+  int i;
+  for(i = 0; i < N; ++i) X[i*INCX] = ALPHA;
+}
 
 YoloObjectDetector::YoloObjectDetector(ros::NodeHandle nh)
     : nodeHandle_(nh), imageTransport_(nodeHandle_), numClasses_(0), classLabels_(0), rosBoxes_(0), rosBoxCounter_(0) {
@@ -286,7 +362,7 @@ detection* YoloObjectDetector::avgPredictions(network* net, int* nboxes) {
       count += l.outputs;
     }
   }
-  detection* dets = get_network_boxes(net, buff_[0].w, buff_[0].h, demoThresh_, demoHier_, 0, 1, nboxes);
+  detection* dets = get_network_boxes(net, buff_[0].w, buff_[0].h, demoThresh_, demoHier_, 0, 1, nboxes, 0);
   return dets;
 }
 
@@ -296,14 +372,17 @@ void* YoloObjectDetector::detectInThread() {
 
   layer l = net_->layers[net_->n - 1];
   float* X = buffLetter_[(buffIndex_ + 2) % 3].data;
-  float* prediction = network_predict(net_, X);
+  float* prediction = network_predict(*net_, X);
 
   rememberNetwork(net_);
   detection* dets = 0;
   int nboxes = 0;
   dets = avgPredictions(net_, &nboxes);
 
-  if (nms > 0) do_nms_obj(dets, nboxes, l.classes, nms);
+  if (nms > 0) {
+    if (l.nms_kind == DEFAULT_NMS) do_nms_sort(dets, nboxes, l.classes, nms);
+    else diounms_sort(dets, nboxes, l.classes, nms, l.nms_kind, l.beta_nms);
+  }
 
   if (enableConsoleOutput_) {
     printf("\033[2J");
@@ -312,7 +391,7 @@ void* YoloObjectDetector::detectInThread() {
     printf("Objects:\n\n");
   }
   image display = buff_[(buffIndex_ + 2) % 3];
-  draw_detections(display, dets, nboxes, demoThresh_, demoNames_, demoAlphabet_, demoClasses_);
+  draw_detections_o(display, dets, nboxes, demoThresh_, demoNames_, demoAlphabet_, demoClasses_);
 
   // extract the bounding boxes and send them to ROS
   int i, j;
@@ -380,7 +459,7 @@ void* YoloObjectDetector::fetchInThread() {
 }
 
 void* YoloObjectDetector::displayInThread(void* ptr) {
-  show_image_cv(buff_[(buffIndex_ + 1) % 3], "YOLO V3", ipl_);
+  show_image_cv_o(buff_[(buffIndex_ + 1) % 3], "YOLO V3", ipl_);
   int c = cv::waitKey(waitKeyDelay_);
   if (c != -1) c = c % 256;
   if (c == 27) {
